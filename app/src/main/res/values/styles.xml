@@ -1,0 +1,10 @@
+<resources>
+    <style name="Theme.SmsSentinel.Base" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:colorAccent">#0D7566</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowBackground">#F5F7F8</item>
+        <item name="android:statusBarColor">#F5F7F8</item>
+    </style>
+    <style name="Theme.SmsSentinel" parent="Theme.SmsSentinel.Base" />
+</resources>

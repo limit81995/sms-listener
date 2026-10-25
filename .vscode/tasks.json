@@ -1,0 +1,31 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Android：保存后自动更新真机",
+      "type": "process",
+      "command": "python3",
+      "args": ["${workspaceFolder}/tools/dev_device.py", "--serial", "${input:androidDevice}"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated" },
+      "runOptions": { "instanceLimit": 1 }
+    },
+    {
+      "label": "Android：编译并更新真机一次",
+      "type": "process",
+      "command": "python3",
+      "args": ["${workspaceFolder}/tools/dev_device.py", "--serial", "${input:androidDevice}", "--once"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    }
+  ],
+  "inputs": [
+    {
+      "id": "androidDevice",
+      "type": "promptString",
+      "description": "输入 adb devices -l 中目标手机第一列的完整标识（无线调试使用 IP:连接端口）"
+    }
+  ]
+}

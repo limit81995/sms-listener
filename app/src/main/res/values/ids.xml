@@ -1,0 +1,13 @@
+<resources>
+    <item name="nav_home" type="id" />
+    <item name="nav_rules" type="id" />
+    <item name="nav_forwards" type="id" />
+    <item name="nav_settings" type="id" />
+    <item name="monitor_status" type="id" />
+    <item name="active_alarm_banner" type="id" />
+    <item name="stop_alarm" type="id" />
+    <item name="rule_list" type="id" />
+    <item name="new_rule" type="id" />
+    <item name="forward_list" type="id" />
+    <item name="new_forward" type="id" />
+</resources>
