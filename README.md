@@ -1,4 +1,4 @@
-# 短信哨兵 / SmsSentinel
+# 短信哨兵 / SmsListener
 
 独立编写的 Kotlin Android 项目：任意号码发来的**短信正文包含关键词**时，在本机响铃、循环振动，直到手动停止或达到设置时长。不依赖、不引用 SmsForwarder 的代码或运行服务。
 
@@ -134,7 +134,7 @@ app/src/test/    匹配、指纹、配置测试；Android 9 / 16 框架模拟测
 ```bash
 adb shell dumpsys vibrator_manager
 adb shell dumpsys notification
-adb logcat -d -s SmsSentinel
+adb logcat -d -s SmsListener
 ```
 
 这些系统输出可能包含其他应用的信息，分享前自行检查。具体真机检查步骤见 [docs/DEVICE_TESTS.md](docs/DEVICE_TESTS.md)。

@@ -1,5 +1,5 @@
 <resources>
-    <style name="Theme.SmsSentinel" parent="Theme.SmsSentinel.Base">
+    <style name="Theme.SmsListener" parent="Theme.SmsListener.Base">
         <item name="android:windowLightNavigationBar">true</item>
     </style>
 </resources>

@@ -4,10 +4,10 @@ plugins {
 }
 
 android {
-    namespace = "io.github.smssentinel"
+    namespace = "io.github.smslistener"
     compileSdk = 36
     defaultConfig {
-        applicationId = "io.github.smssentinel"
+        applicationId = "io.github.smslistener"
         minSdk = 26
         targetSdk = 36
         versionCode = 7

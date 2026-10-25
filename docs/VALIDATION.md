@@ -24,7 +24,7 @@
   - 22 项 Robolectric 框架模拟测试：同一组 11 项用例分别在 API 28 和 API 36 运行，覆盖闹钟振动属性、循环与取消、自动停止、重复触发不延长计时、暂停后的排队报警、前台服务异常、数据保存、短信 PDU 解析/拼接和 Activity 重建。
 - Android Lint：0 错误、3 条提示，均为构建工具/测试依赖有更新版本。当前使用固定且通过验证的版本。
 - `apksigner verify --verbose` 通过，APK v2 签名有效。
-- APK 元数据确认：包名 `io.github.smssentinel`，应用名“短信哨兵”，minSdk 26，targetSdk 36；无 INTERNET、READ_SMS、SEND_SMS 权限。
+- APK 元数据确认：包名 `io.github.smslistener`，应用名“短信哨兵”，minSdk 26，targetSdk 36；无 INTERNET、READ_SMS、SEND_SMS 权限。
 - Gradle Wrapper JAR SHA-256 与官方校验值一致；Gradle 发行包已配置 SHA-256 校验。
 
 报告位于项目构建目录：
