@@ -6,3 +6,5 @@ local.properties
 *.jks
 *.keystore
 artifacts/
+**/__pycache__/
+*.pyc

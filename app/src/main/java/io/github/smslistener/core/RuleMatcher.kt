@@ -11,11 +11,26 @@ data class RuleVerdict(val rule: AlarmRule, val match: RuleMatch)
 
 /** Pure matching logic: no Android dependency, so it runs in plain JVM tests. */
 object RuleMatcher {
-    fun evaluate(rule: AlarmRule, subject: SmsSubject): RuleMatch = when {
+    fun evaluate(rule: AlarmRule, subject: SmsSubject): RuleMatch =
+        evaluate(rule, TriggerSource.SMS, subject)
+
+    fun evaluate(rule: AlarmRule, source: TriggerSource, subject: SmsSubject = SmsSubject()): RuleMatch = when {
         !rule.enabled -> RuleMatch.DISABLED
         rule.validationError() != null -> RuleMatch.INVALID
-        !rule.matches(subject) -> RuleMatch.CONDITION_MISSED
+        firstMatch(rule, source, subject) == null -> RuleMatch.CONDITION_MISSED
         else -> RuleMatch.MATCHED
+    }
+
+    /** One event picks at most one group per rule, preserving the configured OR order. */
+    fun firstMatch(rule: AlarmRule, source: TriggerSource, subject: SmsSubject = SmsSubject()): MatchRule? {
+        if (!rule.enabled || rule.validationError() != null) return null
+        return rule.matchRules.firstOrNull { group ->
+            group.source == source && when (source) {
+                TriggerSource.SMS -> group.matches(subject)
+                TriggerSource.LOCK, TriggerSource.UNLOCK -> true
+                TriggerSource.HTTP -> false
+            }
+        }
     }
 
     fun matched(rules: List<AlarmRule>, subject: SmsSubject): List<AlarmRule> =

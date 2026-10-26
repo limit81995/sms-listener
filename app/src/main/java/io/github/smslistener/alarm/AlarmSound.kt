@@ -11,6 +11,7 @@ class AlarmSound(private val context: Context, private val soundUri: String = ""
     private val audio = context.getSystemService(AudioManager::class.java)
     private val store = AppStore(context)
     private var player: MediaPlayer? = null
+    val durationMillis: Long get() = runCatching { player?.duration?.toLong() ?: 0L }.getOrDefault(0L)
     private var pausedForFocus = false
     private val focus = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
         .setAudioAttributes(AlarmVibration.audioAttributes())
@@ -37,7 +38,8 @@ class AlarmSound(private val context: Context, private val soundUri: String = ""
                 store.log("无法获取闹钟音频焦点，未播放铃声")
                 return false
             }
-            player = MediaPlayer().also { media ->
+            player = MediaPlayer()
+            player!!.also { media ->
                 media.setAudioAttributes(AlarmVibration.audioAttributes())
                 if (soundUri.isNotBlank()) {
                     // User-picked file; fall back to the built-in tone if it cannot be opened.
@@ -71,9 +73,10 @@ class AlarmSound(private val context: Context, private val soundUri: String = ""
     }
 
     fun stop() {
-        player?.release()
+        val previous = player
         player = null
-        audio.abandonAudioFocusRequest(focus)
+        runCatching { previous?.release() }
+        runCatching { audio.abandonAudioFocusRequest(focus) }
         pausedForFocus = false
     }
 }

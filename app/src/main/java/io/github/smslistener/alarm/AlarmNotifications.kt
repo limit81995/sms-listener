@@ -35,7 +35,7 @@ class AlarmNotifications(private val context: Context) {
         return Notification.Builder(context, ACTIVE)
             .setSmallIcon(R.drawable.ic_alarm)
             .setContentTitle(reason)
-            .setContentText("点击“停止报警”结束响铃和振动")
+            .setContentText("点击“停止报警”结束全部本机提醒及待执行的提醒动作")
             .setCategory(Notification.CATEGORY_ALARM)
             .setVisibility(Notification.VISIBILITY_PUBLIC)
             .setOngoing(true)

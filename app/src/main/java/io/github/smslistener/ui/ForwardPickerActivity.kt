@@ -21,15 +21,13 @@ import io.github.smslistener.ui.UiKit.Companion.MUTED
 import io.github.smslistener.ui.UiKit.Companion.SECONDARY
 import io.github.smslistener.ui.UiKit.Companion.SOFT
 
-/**
- * Single-choice picker over the forward library. Tapping a row returns immediately,
- * so there is no confirm button and no selection counter.
- */
+/** Single-choice draft: choosing a target only updates selection; confirm returns it. */
 class ForwardPickerActivity : Activity() {
     private lateinit var ui: UiKit
     private lateinit var store: AppStore
     private lateinit var host: LinearLayout
     private lateinit var empty: TextView
+    private lateinit var confirmButton: TextView
     private var selectedId: String? = null
     private var targets: List<ForwardTarget> = emptyList()
 
@@ -37,8 +35,8 @@ class ForwardPickerActivity : Activity() {
         super.onCreate(savedInstanceState)
         ui = UiKit(this)
         store = AppStore(this)
-        selectedId = savedInstanceState?.getString(KEY_SELECTED)
-            ?: intent.getStringArrayListExtra(EXTRA_SELECTED)?.firstOrNull()
+        selectedId = if (savedInstanceState != null) savedInstanceState.getString(KEY_SELECTED)
+            else intent.getStringArrayListExtra(EXTRA_SELECTED)?.firstOrNull()
         buildScreen()
         reload()
     }
@@ -73,10 +71,11 @@ class ForwardPickerActivity : Activity() {
         })
         bar.addView(label("选择转发目标", 17, INK, true).apply { gravity = Gravity.CENTER },
             LinearLayout.LayoutParams(0, -2, 1f))
-        bar.addView(plainButton("添加") { addTarget() }.apply {
+        confirmButton = plainButton("确定") { confirm() }.apply {
             textSize = 13f; minHeight = dp(40); minimumHeight = dp(40)
             setPadding(dp(18), dp(8), dp(18), dp(8)); layoutParams = LinearLayout.LayoutParams(-2, -2)
-        })
+        }
+        bar.addView(confirmButton)
         root.addView(bar)
         divider(root)
 
@@ -84,6 +83,11 @@ class ForwardPickerActivity : Activity() {
         root.addView(ScrollView(this@ForwardPickerActivity).apply {
             isFillViewport = true; clipToPadding = false; addView(content)
         }, LinearLayout.LayoutParams(-1, 0, 1f))
+
+        content.addView(label("选择一个目标，点击右上角“确定”后加入规则；返回会放弃本次修改。", 12, MUTED))
+        gap(content, 12)
+        content.addView(button("+ 添加转发目标", SOFT, ACCENT) { addTarget() })
+        gap(content, 16)
 
         empty = label("暂无转发规则", 14, MUTED).apply {
             gravity = Gravity.CENTER
@@ -99,6 +103,8 @@ class ForwardPickerActivity : Activity() {
     private fun render(): Unit = with(ui) {
         if (!::host.isInitialized) return
         host.removeAllViews()
+        confirmButton.isEnabled = targets.any { it.id == selectedId }
+        confirmButton.alpha = if (confirmButton.isEnabled) 1f else 0.4f
         empty.visibility = if (targets.isEmpty()) View.VISIBLE else View.GONE
         targets.forEach { target ->
             val picked = target.id == selectedId
@@ -108,9 +114,7 @@ class ForwardPickerActivity : Activity() {
                 contentDescription = "${target.displayName}，" + if (picked) "已选择" else "点击选择"
                 setOnClickListener {
                     selectedId = target.id
-                    setResult(RESULT_OK, Intent()
-                        .putStringArrayListExtra(EXTRA_SELECTED, arrayListOf(target.id)))
-                    finish()
+                    render()
                 }
             }
             val head = row()
@@ -127,6 +131,20 @@ class ForwardPickerActivity : Activity() {
             card.addView(head)
             host.addView(card, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(10) })
         }
+    }
+
+    private fun confirm() {
+        if (isFinishing) return
+        val id = selectedId ?: return
+        if (store.forward(id) == null) {
+            reload()
+            android.app.AlertDialog.Builder(this).setTitle("请重新选择")
+                .setMessage("该转发目标已被删除，请选择其他目标。")
+                .setPositiveButton("知道了", null).show()
+            return
+        }
+        setResult(RESULT_OK, Intent().putStringArrayListExtra(EXTRA_SELECTED, arrayListOf(id)))
+        finish()
     }
 
     private fun addTarget() {

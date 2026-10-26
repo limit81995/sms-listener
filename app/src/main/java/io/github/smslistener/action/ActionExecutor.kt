@@ -2,6 +2,10 @@ package io.github.smslistener.action
 
 import android.content.Context
 import io.github.smslistener.alarm.AlarmController
+import io.github.smslistener.alarm.AlarmCommand
+import io.github.smslistener.alarm.ActionCancellationTracker
+import io.github.smslistener.alarm.ActionCancellationSnapshot
+import io.github.smslistener.core.ActionOperation
 import io.github.smslistener.alarm.AlarmSpec
 import io.github.smslistener.core.ActionType
 import io.github.smslistener.core.AlarmRule
@@ -10,9 +14,8 @@ import io.github.smslistener.data.AppStore
 import java.util.concurrent.Executors
 
 /**
- * Executes every action of every matched rule. Local actions are merged into one
- * alarm run; forward targets are queued on a single background thread so they can
- * never block the SMS broadcast.
+ * Local actions retain their rule identity and list order in a single command batch.
+ * Forward targets use a separate background queue and never block the SMS broadcast.
  */
 object ActionExecutor {
     private val executor = Executors.newSingleThreadExecutor { runnable ->
@@ -21,16 +24,12 @@ object ActionExecutor {
 
     fun dispatch(context: Context, rules: List<AlarmRule>, subject: SmsSubject) {
         val store = AppStore(context)
-        val spec = mergeLocal(rules)
-        val reason = when {
-            rules.size == 1 -> "规则「${rules.first().name}」命中"
-            else -> "${rules.size} 条规则命中"
-        }
-        if (spec != null) AlarmController.start(context, spec, reason, fromSms = true)
+        val generation = AlarmController.currentGeneration()
+        AlarmController.execute(context, localCommands(rules, fromSms = true), generation)
 
         val state = store.state()
         val targets = rules.flatMap { rule ->
-            rule.actions.filter { it.type == ActionType.FORWARD }
+            rule.actions.filter { it.enabled && it.type == ActionType.FORWARD && it.operation == ActionOperation.START }
                 .flatMap { action -> action.forwardIds.mapNotNull { id -> state.forward(id)?.let { rule to it } } }
         }
         if (targets.isEmpty()) return
@@ -47,20 +46,32 @@ object ActionExecutor {
     }
 
     /** Runs one rule woken by a screen event; there is no SMS content to forward. */
-    fun dispatchTrigger(context: Context, rule: AlarmRule) {
+    fun dispatchTrigger(context: Context, rule: AlarmRule, cancellation: ActionCancellationSnapshot? = null) {
         val store = AppStore(context)
         val state = store.state()
-        val spec = mergeLocal(listOf(rule))
-        if (spec != null) AlarmController.start(context, spec, "规则「${rule.name}」触发")
-        val targets = rule.actions.filter { it.type == ActionType.FORWARD }
-            .flatMap { action -> action.forwardIds.mapNotNull { id -> state.forward(id)?.let { rule to it } } }
+        if (!state.enabled) return
+        val current = state.rules.firstOrNull { it.id == rule.id } ?: return
+        if (!current.enabled || current.matchRules != rule.matchRules || current.validationError() != null) return
+        val generation = cancellation?.generation ?: AlarmController.currentGeneration()
+        AlarmController.execute(context, localCommands(listOf(current), fromSms = false, cancellation = cancellation), generation)
+        val targets = current.actions.filter { it.enabled && it.type == ActionType.FORWARD && it.operation == ActionOperation.START }
+            .flatMap { action -> action.forwardIds.mapNotNull { id -> state.forward(id)?.let { current to it } } }
         if (targets.isEmpty()) return
         val subject = SmsSubject()
         executor.execute {
             targets.forEach { (r, target) ->
                 try {
-                    NetSender.send(target, r, subject)
-                    store.log("已转发：${target.type.label} / ${r.name}")
+                    // The network queue may outlive the screen delay; recheck before sending.
+                    val latest = store.state()
+                    val active = latest.rules.firstOrNull { it.id == r.id } ?: return@forEach
+                    if (!latest.enabled || !active.enabled || active.matchRules != r.matchRules ||
+                        active.validationError() != null || active.actions.none {
+                            it.enabled && it.type == ActionType.FORWARD && it.operation == ActionOperation.START && target.id in it.forwardIds
+                        }
+                    ) return@forEach
+                    val destination = latest.forward(target.id) ?: return@forEach
+                    NetSender.send(destination, active, subject)
+                    store.log("已转发：${destination.type.label} / ${active.name}")
                 } catch (e: Exception) {
                     store.log("转发失败：${target.type.label} / ${r.name}", e)
                 }
@@ -68,13 +79,27 @@ object ActionExecutor {
         }
     }
 
+    /** Preserve rule/action identity so STOP can target one channel without muting other owners. */
+    internal fun localCommands(rules: List<AlarmRule>, fromSms: Boolean, cancellation: ActionCancellationSnapshot? = null): List<AlarmCommand> =
+        rules.flatMap { rule ->
+            rule.actions.mapIndexedNotNull { index, action ->
+                if (!rule.enabled || !action.enabled || !action.type.isLocal || action.validationError() != null) null
+                else AlarmCommand(sourceRuleId = rule.id, slotId = index.toString(), type = action.type,
+                    operation = action.operation, stopScope = action.stopScope, targetRuleId = action.targetRuleId,
+                    delayMs = action.delayMs, durationSeconds = action.durationSeconds, repeatCount = action.repeatCount,
+                    soundUri = action.soundUri, reason = "规则「" + rule.name + "」触发", fromSms = fromSms,
+                    cancellationEpoch = cancellation?.takeIf { it.ruleId == rule.id }?.channels?.get(action.type)
+                        ?: ActionCancellationTracker.current(rule.id, action.type))
+            }
+        }
+
     /** Feeds the local alarm tests from the tools screen. */
     fun runLocal(context: Context, spec: AlarmSpec, reason: String): Boolean =
         AlarmController.start(context, spec, reason)
 
     /**
-     * Real phones can only run one alarm at a time. Any "manual stop" (0) wins;
-     * otherwise the longest configured duration keeps the alarm audible.
+     * Legacy summary helper for older callers/tests; actual rule execution uses ordered commands.
+     * STOP must never be misrepresented as a new local alarm.
      */
     internal fun mergeLocal(rules: List<AlarmRule>): AlarmSpec? {
         var sound = false
@@ -85,7 +110,7 @@ object ActionExecutor {
         var soundUri = ""
         val durations = mutableListOf<Int>()
         rules.forEach { rule ->
-            rule.actions.filter { it.enabled }.forEach { action ->
+            rule.actions.filter { it.enabled && it.operation == ActionOperation.START }.forEach { action ->
                 when (action.type) {
                     ActionType.RING -> sound = true
                     ActionType.VIBRATE -> vibration = true

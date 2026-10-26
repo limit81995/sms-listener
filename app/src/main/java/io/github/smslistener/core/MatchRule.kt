@@ -53,16 +53,20 @@ data class MatchCondition(val mode: MatchMode, val value: String) {
 }
 
 /**
- * One way an SMS can match. Every configured condition must hold (AND);
- * separate match rules are alternatives (OR).
+ * One source-specific condition group. SMS fields combine with AND;
+ * groups are ordered alternatives (OR), and only the first matching group fires.
  */
 data class MatchRule(
     val id: String = UUID.randomUUID().toString(),
     val localNumber: MatchCondition? = null,
     val senderNumber: MatchCondition? = null,
     val body: MatchCondition? = null,
+    val source: TriggerSource = TriggerSource.SMS,
+    /** Used only by screen conditions; SMS always dispatches immediately. */
+    val delayMs: Long = 0,
 ) {
-    val isEmpty: Boolean get() = localNumber == null && senderNumber == null && body == null
+    val isEmpty: Boolean get() = source == TriggerSource.SMS &&
+        localNumber == null && senderNumber == null && body == null
 
     fun conditions(): List<Pair<MatchField, MatchCondition>> = listOfNotNull(
         localNumber?.let { MatchField.LOCAL_NUMBER to it },
@@ -71,6 +75,13 @@ data class MatchRule(
     )
 
     fun validationError(): String? {
+        when (source) {
+            TriggerSource.HTTP -> return "HTTP(S) 触发尚未开放"
+            TriggerSource.LOCK, TriggerSource.UNLOCK -> {
+                return if (delayMs in 0..600_000) null else "触发延迟需在 0～600000 毫秒之间"
+            }
+            TriggerSource.SMS -> Unit
+        }
         if (isEmpty) return "每条触发条件至少填写一个条件"
         conditions().forEach { (_, condition) ->
             condition.validationError()?.let { return it }
@@ -79,6 +90,7 @@ data class MatchRule(
     }
 
     fun matches(subject: SmsSubject): Boolean {
+        if (source != TriggerSource.SMS) return false
         val results = conditions().map { (field, condition) ->
             when (field) {
                 MatchField.LOCAL_NUMBER -> condition.matches(subject.localNumber, phone = true)
@@ -89,9 +101,13 @@ data class MatchRule(
         return results.isNotEmpty() && results.all { it }
     }
 
-    fun summary(): String =
-        conditions().joinToString(" + ") { (field, condition) -> condition.summary(field) }
+    fun summary(): String = when (source) {
+        TriggerSource.SMS -> conditions().joinToString(" + ") { (field, condition) -> condition.summary(field) }
             .ifEmpty { "未设置条件" }
+        TriggerSource.LOCK, TriggerSource.UNLOCK -> source.label +
+            if (delayMs > 0) " · 延迟 ${delayMs}ms" else " · 立即触发"
+        TriggerSource.HTTP -> "HTTP(S) 触发尚未开放"
+    }
 }
 
 data class ForwardTarget(

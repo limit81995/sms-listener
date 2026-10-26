@@ -14,7 +14,8 @@ import java.util.Date
 import java.util.Locale
 
 class AppStore(context: Context) {
-    private val prefs = context.applicationContext.getSharedPreferences("smslistener", Context.MODE_PRIVATE)
+    private val app = context.applicationContext
+    private val prefs = app.getSharedPreferences("smslistener", Context.MODE_PRIVATE)
 
     fun observe(listener: SharedPreferences.OnSharedPreferenceChangeListener) = prefs.registerOnSharedPreferenceChangeListener(listener)
     fun removeObserver(listener: SharedPreferences.OnSharedPreferenceChangeListener) = prefs.unregisterOnSharedPreferenceChangeListener(listener)
@@ -41,7 +42,73 @@ class AppStore(context: Context) {
     }
 
     fun saveState(state: SentinelState): Boolean = synchronized(lock) {
-        prefs.edit().putString(KEY_STATE, RuleCodec.encode(state)).commit()
+        commitPreferences(setOf(KEY_STATE, ConfigFileManager.KEY_REVISION)) {
+            putString(KEY_STATE, RuleCodec.encode(state))
+            putLong(ConfigFileManager.KEY_REVISION, prefs.getLong(ConfigFileManager.KEY_REVISION, 0) + 1)
+        }.also { saved -> if (saved) ConfigFileManager.configurationSaved(app) }
+    }
+
+    /** Atomically use an explicitly chosen or externally updated configuration file. */
+    fun applyConfigurationFile(state: SentinelState, uri: String, name: String, hash: String, expectedRevision: Long): Boolean = synchronized(lock) {
+        if (prefs.getLong(ConfigFileManager.KEY_REVISION, 0) != expectedRevision) return@synchronized false
+        ConfigBackupCodec.encode(state)
+        val nextRevision = expectedRevision + 1
+        commitPreferences(setOf(KEY_STATE, ConfigFileManager.KEY_REVISION, ConfigFileManager.KEY_URI,
+            ConfigFileManager.KEY_NAME, ConfigFileManager.KEY_HASH, ConfigFileManager.KEY_ERROR,
+            ConfigFileManager.KEY_SUCCESS, ConfigFileManager.KEY_SAVED_REVISION)) {
+            putString(KEY_STATE, RuleCodec.encode(state))
+            putLong(ConfigFileManager.KEY_REVISION, nextRevision)
+            putString(ConfigFileManager.KEY_URI, uri)
+            putString(ConfigFileManager.KEY_NAME, name)
+            putString(ConfigFileManager.KEY_HASH, hash)
+            putLong(ConfigFileManager.KEY_SAVED_REVISION, nextRevision)
+            putLong(ConfigFileManager.KEY_SUCCESS, System.currentTimeMillis())
+            remove(ConfigFileManager.KEY_ERROR)
+        }
+    }
+
+    /** SharedPreferences mutates memory even when commit fails. Roll back only our keys while
+     * holding the same lock as every configuration reader, leaving SMS cursors and logs alone. */
+    internal fun commitPreferences(keys: Set<String>, update: SharedPreferences.Editor.() -> Unit): Boolean = synchronized(lock) {
+        val all = prefs.all
+        val previous = keys.associateWith { all[it] }
+        if (runCatching { prefs.edit().apply(update).commit() }.getOrDefault(false)) return@synchronized true
+        val rollback = prefs.edit()
+        previous.forEach { (key, value) ->
+            when (value) {
+                null -> rollback.remove(key)
+                is String -> rollback.putString(key, value)
+                is Long -> rollback.putLong(key, value)
+                is Boolean -> rollback.putBoolean(key, value)
+                is Int -> rollback.putInt(key, value)
+            }
+        }
+        runCatching { rollback.commit() }
+        false
+    }
+
+
+    internal fun configurationSnapshot(): Pair<SentinelState, Long> = synchronized(lock) {
+        // Do not export state() fallback emptiness when internal storage is corrupt.
+        val raw = prefs.getString(KEY_STATE, null)
+        require(raw != null || prefs.getLong(ConfigFileManager.KEY_REVISION, 0) == 0L || prefs.contains(KEY_LEGACY)) {
+            "本机配置缺失，请重新引用配置文件"
+        }
+        val snapshot = if (raw != null) {
+            val json = runCatching { JSONObject(raw) }.getOrElse {
+                throw IllegalArgumentException("当前配置损坏，请重新引用有效的配置文件")
+            }
+            val schema = json.opt("schema")
+            require(schema is Number && schema.toDouble() == schema.toInt().toDouble()) { "当前配置版本缺失或损坏" }
+            when (schema.toInt()) {
+                5, RuleCodec.SCHEMA -> ConfigBackupCodec.decode(raw)
+                in 1 until RuleCodec.SCHEMA -> RuleCodec.decode(raw)
+                else -> throw IllegalArgumentException("当前配置版本不支持")
+            }
+        } else {
+            prefs.getString(KEY_LEGACY, null)?.let(RuleCodec::decode) ?: SentinelState()
+        }
+        snapshot to prefs.getLong(ConfigFileManager.KEY_REVISION, 0)
     }
 
     fun rules(): List<AlarmRule> = state().rules

@@ -15,6 +15,7 @@ import io.github.smslistener.R
 import io.github.smslistener.alarm.AlarmService
 import io.github.smslistener.alarm.AlarmSpec
 import io.github.smslistener.alarm.AlarmVibration
+import io.github.smslistener.core.ActionOperation
 import io.github.smslistener.core.ActionType
 import io.github.smslistener.core.AlarmRule
 import io.github.smslistener.core.ForwardTarget
@@ -25,6 +26,8 @@ import io.github.smslistener.core.MatchRule
 import io.github.smslistener.core.RuleAction
 import io.github.smslistener.core.SentinelState
 import io.github.smslistener.data.AppStore
+import io.github.smslistener.data.RuleCodec
+import org.json.JSONObject
 import io.github.smslistener.sms.SmsProcessor
 import io.github.smslistener.ui.MainActivity
 import org.junit.After
@@ -49,7 +52,7 @@ class AndroidBehaviorTest {
 
     @Before fun setUp() {
         app = RuntimeEnvironment.getApplication()
-        app.getSharedPreferences("sentinel", Context.MODE_PRIVATE).edit().clear().commit()
+        app.getSharedPreferences("smslistener", Context.MODE_PRIVATE).edit().clear().commit()
     }
 
     @After fun tearDown() {
@@ -176,6 +179,29 @@ class AndroidBehaviorTest {
         assertFalse(log.contains("event-0\n"))
     }
 
+    @Test fun storedSchemaFiveDisabledActionsStayInactiveAndNextSaveWritesSix() {
+        val old = SentinelState(rules = listOf(rule(actions = listOf(
+            RuleAction(ActionType.VIBRATE, enabled = false, delayMs = 41, durationSeconds = 19, repeatCount = 3),
+        ))))
+        val raw = JSONObject(RuleCodec.encode(old)).put("schema", 5)
+        raw.getJSONArray("rules").getJSONObject(0).getJSONArray("actions").getJSONObject(0).apply {
+            remove("operation")
+            remove("stopScope")
+            remove("targetRuleId")
+        }
+        val prefs = app.getSharedPreferences("smslistener", Context.MODE_PRIVATE)
+        assertTrue(prefs.edit().putString("state_v2", raw.toString()).commit())
+        val restored = AppStore(app).state()
+        assertEquals(old, restored)
+        val action = restored.rules.single().actions.single()
+        assertFalse(action.enabled)
+        assertEquals(ActionOperation.START, action.operation)
+        assertTrue(restored.rules.single().localActions().isEmpty())
+        assertTrue(AppStore(app).saveState(restored))
+        assertEquals(6, JSONObject(requireNotNull(prefs.getString("state_v2", null))).getInt("schema"))
+        assertEquals(restored, AppStore(app).state())
+    }
+
     @Test fun editingOneRuleKeepsTheOthers() {
         val store = AppStore(app)
         store.saveState(SentinelState(rules = listOf(rule(id = "a", name = "A"), rule(id = "b", name = "B"))))
@@ -186,7 +212,7 @@ class AndroidBehaviorTest {
     }
 
     @Test fun malformedStoredStateFailsClosed() {
-        app.getSharedPreferences("sentinel", Context.MODE_PRIVATE).edit().putString("state_v2", "garbage").commit()
+        app.getSharedPreferences("smslistener", Context.MODE_PRIVATE).edit().putString("state_v2", "garbage").commit()
         // Monitoring defaults to on, but a damaged store must never invent rules.
         assertTrue(AppStore(app).state().rules.isEmpty())
         assertTrue(AppStore(app).state().forwards.isEmpty())
@@ -314,11 +340,10 @@ class AndroidBehaviorTest {
         val controller = Robolectric.buildActivity(io.github.smslistener.ui.RuleEditActivity::class.java, intent).setup()
         val activity = controller.get()
         val edits = views(activity.window.decorView).filterIsInstance<android.widget.EditText>()
-        // name, description, trigger delay
-        assertEquals(3, edits.size)
+        // Only basic info remains here; conditions own their configuration pages.
+        assertEquals(2, edits.size)
         assertEquals("银行动账", edits[0].text.toString())
         assertEquals("储蓄卡", edits[1].text.toString())
-        assertEquals("0", edits[2].text.toString())
         val labels = views(activity.window.decorView).filterIsInstance<TextView>().map { it.text.toString() }
         assertTrue(labels.any { it.contains("振动") })
         assertTrue(labels.any { it.contains("转发") })

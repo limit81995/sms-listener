@@ -1,5 +1,7 @@
 package io.github.smslistener.data
 
+import io.github.smslistener.core.ActionOperation
+import io.github.smslistener.core.StopScope
 import io.github.smslistener.core.ActionType
 import io.github.smslistener.core.AlarmRule
 import io.github.smslistener.core.ForwardTarget
@@ -9,12 +11,13 @@ import io.github.smslistener.core.MatchMode
 import io.github.smslistener.core.MatchRule
 import io.github.smslistener.core.RuleAction
 import io.github.smslistener.core.SentinelState
+import io.github.smslistener.core.TriggerSource
 import org.json.JSONArray
 import org.json.JSONObject
 
 /** JSON persistence, including migration from earlier schemas. */
 object RuleCodec {
-    const val SCHEMA = 4
+    const val SCHEMA = 6
 
     fun encode(state: SentinelState): String = JSONObject().apply {
         put("schema", SCHEMA)
@@ -28,14 +31,14 @@ object RuleCodec {
         put("name", rule.name)
         put("description", rule.description)
         put("enabled", rule.enabled)
-        put("trigger", rule.trigger.name)
-        put("triggerDelayMs", rule.triggerDelayMs)
         put("matchRules", JSONArray().apply { rule.matchRules.forEach { put(encodeMatchRule(it)) } })
         put("actions", JSONArray().apply { rule.actions.forEach { put(encodeAction(it)) } })
     }
 
-    private fun encodeMatchRule(matchRule: MatchRule): JSONObject = JSONObject().apply {
+    fun encodeMatchRule(matchRule: MatchRule): JSONObject = JSONObject().apply {
         put("id", matchRule.id)
+        put("source", matchRule.source.name)
+        put("delayMs", matchRule.delayMs)
         matchRule.localNumber?.let { put("localNumber", encodeCondition(it)) }
         matchRule.senderNumber?.let { put("senderNumber", encodeCondition(it)) }
         matchRule.body?.let { put("body", encodeCondition(it)) }
@@ -46,7 +49,7 @@ object RuleCodec {
         put("value", condition.value)
     }
 
-    private fun encodeAction(action: RuleAction): JSONObject = JSONObject().apply {
+    fun encodeAction(action: RuleAction): JSONObject = JSONObject().apply {
         put("type", action.type.name)
         put("enabled", action.enabled)
         put("delayMs", action.delayMs)
@@ -54,6 +57,9 @@ object RuleCodec {
         put("repeatCount", action.repeatCount)
         put("soundUri", action.soundUri)
         put("forwardIds", JSONArray(action.forwardIds))
+        put("operation", action.operation.name)
+        put("stopScope", action.stopScope.name)
+        put("targetRuleId", action.targetRuleId)
     }
 
     internal fun encodeForward(target: ForwardTarget): JSONObject = JSONObject().apply {
@@ -84,8 +90,21 @@ object RuleCodec {
 
     fun decode(raw: String): SentinelState {
         val json = JSONObject(raw)
-        return when (val schema = json.optInt("schema", 1)) {
-            SCHEMA -> SentinelState(
+        val schema = json.optInt("schema", 1)
+        // Unlike tolerant draft decoding, a whole configuration must not silently discard an
+        // invalid operation and leave the remaining START actions executable.
+        json.optJSONArray("rules")?.let { rules ->
+            for (index in 0 until rules.length()) {
+                rules.optJSONObject(index)?.optJSONArray("actions")?.let { actions ->
+                    for (actionIndex in 0 until actions.length()) {
+                        val action = actions.optJSONObject(actionIndex) ?: continue
+                        require(validActionMetadata(action, requireFields = schema == SCHEMA)) { "动作操作或停止范围无效" }
+                    }
+                }
+            }
+        }
+        return when (schema) {
+            4, 5, SCHEMA -> SentinelState(
                 enabled = json.optBoolean("enabled", true),
                 rules = decodeRules(json.optJSONArray("rules")),
                 forwards = json.optJSONArray("forwards")?.let { array ->
@@ -102,45 +121,77 @@ object RuleCodec {
     private fun decodeRules(array: JSONArray?): List<AlarmRule> =
         array?.let { rows -> (0 until rows.length()).mapNotNull { decodeRule(rows.optJSONObject(it)) } } ?: emptyList()
 
-    private fun decodeRule(json: JSONObject?): AlarmRule? {
+    /** Also accepts pre-schema-5 standalone rule drafts / intent extras. */
+    fun decodeRule(json: JSONObject?): AlarmRule? {
         json ?: return null
+        json.optJSONArray("actions")?.let { actions ->
+            for (index in 0 until actions.length()) {
+                val action = actions.optJSONObject(index) ?: continue
+                if (!validActionMetadata(action)) return null
+            }
+        }
+        val id = json.optString("id").ifBlank { java.util.UUID.randomUUID().toString() }
+        // Only an absent source defaults to SMS. Unknown future types fail closed.
+        val legacySource = if (json.isNull("trigger")) TriggerSource.SMS else
+            TriggerSource.entries.firstOrNull { it.name == json.optString("trigger") } ?: return null
+        val groups = when (legacySource) {
+            TriggerSource.LOCK, TriggerSource.UNLOCK, TriggerSource.HTTP -> listOf(
+                MatchRule(
+                    // Stable on repeated reads, even before the migrated state is saved.
+                    id = "$id:screen",
+                    source = legacySource,
+                    delayMs = json.optLong("triggerDelayMs", 0L),
+                ),
+            )
+            TriggerSource.SMS -> json.optJSONArray("matchRules")?.let { array ->
+                (0 until array.length()).mapNotNull { decodeMatchRule(array.optJSONObject(it)) }
+            } ?: emptyList()
+        }
         return AlarmRule(
-            id = json.optString("id").ifBlank { java.util.UUID.randomUUID().toString() },
+            id = id,
             name = json.optString("name"),
             description = json.optString("description"),
             enabled = json.optBoolean("enabled", true),
-            trigger = io.github.smslistener.core.TriggerSource.entries
-                .firstOrNull { it.name == json.optString("trigger") } ?: io.github.smslistener.core.TriggerSource.SMS,
-            triggerDelayMs = json.optLong("triggerDelayMs", 0L).coerceIn(0, 600_000),
-            matchRules = json.optJSONArray("matchRules")?.let { array ->
-                (0 until array.length()).mapNotNull { decodeMatchRule(array.optJSONObject(it)) }
-            } ?: emptyList(),
+            matchRules = groups,
             actions = json.optJSONArray("actions")?.let { array ->
                 (0 until array.length()).mapNotNull { decodeAction(array.optJSONObject(it)) }
             } ?: emptyList(),
         )
     }
 
-    private fun decodeMatchRule(json: JSONObject?): MatchRule? {
+    fun decodeMatchRule(json: JSONObject?): MatchRule? {
         json ?: return null
+        val source = if (json.isNull("source")) TriggerSource.SMS else
+            TriggerSource.entries.firstOrNull { it.name == json.optString("source") } ?: return null
         return MatchRule(
             id = json.optString("id").ifBlank { java.util.UUID.randomUUID().toString() },
             localNumber = decodeCondition(json.optJSONObject("localNumber")),
             senderNumber = decodeCondition(json.optJSONObject("senderNumber")),
             body = decodeCondition(json.optJSONObject("body")),
+            source = source,
+            delayMs = json.optLong("delayMs", 0L),
         )
     }
 
     private fun decodeCondition(json: JSONObject?): MatchCondition? {
         json ?: return null
         val mode = MatchMode.entries.firstOrNull { it.name == json.optString("mode") } ?: return null
-        val value = json.optString("value")
-        if (value.isBlank()) return null
-        return MatchCondition(mode, value)
+        // Preserve incomplete draft content; validation, not decoding, reports blanks.
+        return MatchCondition(mode, json.optString("value"))
     }
 
-    private fun decodeAction(json: JSONObject?): RuleAction? {
+    private fun validActionMetadata(json: JSONObject, requireFields: Boolean = false): Boolean {
+        if (requireFields && listOf("operation", "stopScope", "targetRuleId").any { !json.has(it) }) return false
+        val operation = if (!json.has("operation")) ActionOperation.START else
+            ActionOperation.entries.firstOrNull { it.name == json.opt("operation") } ?: return false
+        if (json.has("stopScope") && StopScope.entries.none { it.name == json.opt("stopScope") }) return false
+        if (json.has("targetRuleId") && json.opt("targetRuleId") !is String) return false
+        return json.opt("type") != ActionType.FORWARD.name || operation == ActionOperation.START
+    }
+
+    fun decodeAction(json: JSONObject?): RuleAction? {
         json ?: return null
+        if (!validActionMetadata(json)) return null
         val type = ActionType.entries.firstOrNull { it.name == json.optString("type") } ?: return null
         val ids = json.optJSONArray("forwardIds")?.let { array ->
             (0 until array.length()).mapNotNull { array.optString(it)?.takeIf(String::isNotBlank) }
@@ -153,6 +204,9 @@ object RuleCodec {
             repeatCount = json.optInt("repeatCount", 0).coerceIn(0, 999),
             soundUri = json.optString("soundUri"),
             forwardIds = ids,
+            operation = if (json.has("operation")) ActionOperation.valueOf(json.getString("operation")) else ActionOperation.START,
+            stopScope = if (json.has("stopScope")) StopScope.valueOf(json.getString("stopScope")) else StopScope.THIS_RULE,
+            targetRuleId = json.optString("targetRuleId"),
         )
     }
 
@@ -176,7 +230,8 @@ object RuleCodec {
                                 ids += target.id
                             }
                         }
-                        RuleAction(type = type, durationSeconds = action.optInt("duration", 0).coerceIn(0, 3600), forwardIds = ids)
+                        RuleAction(type = type, enabled = action.optBoolean("enabled", true),
+                            durationSeconds = action.optInt("duration", 0).coerceIn(0, 3600), forwardIds = ids)
                     }
                 } ?: emptyList()
                 AlarmRule(
@@ -216,13 +271,14 @@ object RuleCodec {
                 )
                 val actions = mutableListOf<RuleAction>()
                 val ids = mutableListOf<String>()
+                val disabledIds = mutableListOf<String>()
                 rule.optJSONArray("actions")?.let { rows ->
                     for (index in 0 until rows.length()) {
                         val action = rows.optJSONObject(index) ?: continue
                         when (action.optString("type")) {
-                            "RING" -> actions += RuleAction(type = ActionType.RING, durationSeconds = action.optInt("duration", 0).coerceIn(0, 3600))
-                            "VIBRATE" -> actions += RuleAction(type = ActionType.VIBRATE, durationSeconds = action.optInt("duration", 0).coerceIn(0, 3600))
-                            "FLASH" -> actions += RuleAction(type = ActionType.FLASH, durationSeconds = action.optInt("duration", 0).coerceIn(0, 3600))
+                            "RING" -> actions += RuleAction(type = ActionType.RING, enabled = action.optBoolean("enabled", true), durationSeconds = action.optInt("duration", 0).coerceIn(0, 3600))
+                            "VIBRATE" -> actions += RuleAction(type = ActionType.VIBRATE, enabled = action.optBoolean("enabled", true), durationSeconds = action.optInt("duration", 0).coerceIn(0, 3600))
+                            "FLASH" -> actions += RuleAction(type = ActionType.FLASH, enabled = action.optBoolean("enabled", true), durationSeconds = action.optInt("duration", 0).coerceIn(0, 3600))
                             "FEISHU" -> {
                                 val target = ForwardTarget(
                                     type = ForwardType.FEISHU,
@@ -230,7 +286,8 @@ object RuleCodec {
                                     body = action.optString("body"),
                                     secret = action.optString("secret"),
                                 )
-                                library[target.id] = target; ids += target.id
+                                library[target.id] = target
+                                if (action.optBoolean("enabled", true)) ids += target.id else disabledIds += target.id
                             }
                             "HTTP", "WEBHOOK" -> {
                                 val target = ForwardTarget(
@@ -240,12 +297,14 @@ object RuleCodec {
                                     headers = action.optString("headers"),
                                     body = action.optString("body"),
                                 )
-                                library[target.id] = target; ids += target.id
+                                library[target.id] = target
+                                if (action.optBoolean("enabled", true)) ids += target.id else disabledIds += target.id
                             }
                         }
                     }
                 }
                 if (ids.isNotEmpty()) actions += RuleAction(ActionType.FORWARD, forwardIds = ids)
+                if (disabledIds.isNotEmpty()) actions += RuleAction(ActionType.FORWARD, enabled = false, forwardIds = disabledIds)
                 AlarmRule(
                     id = rule.optString("id").ifBlank { java.util.UUID.randomUUID().toString() },
                     name = rule.optString("name"),

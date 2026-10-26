@@ -42,6 +42,10 @@
         <activity android:name=".ui.TestsActivity" android:exported="false" />
         <activity android:name=".ui.ActionConfigActivity" android:exported="false"
             android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".ui.ConfigFileActivity" android:exported="false" />
+        <activity android:name=".ui.TriggerTypeActivity" android:exported="false" />
+        <activity android:name=".ui.MatchRuleActivity" android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
         <activity android:name=".ui.LogsActivity" android:exported="false" />
         <receiver android:name=".sms.SmsReceiver" android:exported="true"
             android:permission="android.permission.BROADCAST_SMS">
@@ -50,13 +54,6 @@
             </intent-filter>
         </receiver>
         <receiver android:name=".alarm.StopAlarmReceiver" android:exported="false" />
-        <receiver android:name=".monitor.WakeReceiver" android:exported="false">
-            <intent-filter>
-                <action android:name="android.intent.action.SCREEN_ON" />
-                <action android:name="android.intent.action.USER_PRESENT" />
-                <action android:name="android.intent.action.SCREEN_OFF" />
-            </intent-filter>
-        </receiver>
         <receiver android:name=".monitor.BootReceiver" android:exported="false">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />

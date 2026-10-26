@@ -13,6 +13,8 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import io.github.smslistener.core.ActionOperation
+import io.github.smslistener.core.StopScope
 import io.github.smslistener.core.ActionType
 import io.github.smslistener.core.AlarmRule
 import io.github.smslistener.core.ForwardTarget
@@ -51,125 +53,58 @@ class RuleEditActivity : Activity() {
     private val actions = mutableListOf<RuleAction>()
     private var ruleId: String = UUID.randomUUID().toString()
     private var existing: AlarmRule? = null
-    private var pendingForwardIndex = -1
-    private var pendingActionIndex = -1
-    private var trigger: TriggerSource = TriggerSource.SMS
-    private var triggerDelayMs: Long = 0
-    private lateinit var triggerDelayField: EditText
-    private lateinit var matchCard: LinearLayout
+    private var pendingRequest = 0
+    private var pendingIndex = -1
+    private var pendingMatchId: String? = null
+    private var pendingActionType: ActionType? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         ui = UiKit(this)
         store = AppStore(this)
-        ruleId = savedInstanceState?.getString(KEY_ID)
-            ?: intent.getStringExtra(EXTRA_ID)
-            ?: UUID.randomUUID().toString()
+        val draft = savedInstanceState?.getString(KEY_DRAFT)?.let {
+            runCatching { RuleCodec.decodeRule(org.json.JSONObject(it)) }.getOrNull()
+        }
+        ruleId = draft?.id ?: intent.getStringExtra(EXTRA_ID) ?: UUID.randomUUID().toString()
         existing = store.rule(ruleId)
-        pendingForwardIndex = savedInstanceState?.getInt(KEY_FORWARD_INDEX, -1) ?: -1
-        matchRules.clear()
-        actions.clear()
-        val saved = savedInstanceState
-        if (saved != null) {
-            restoreDraft(saved)
-        } else existing?.let { rule ->
-            matchRules += rule.matchRules
-            actions += rule.actions
-            trigger = rule.trigger
-            triggerDelayMs = rule.triggerDelayMs
+        val initial = draft ?: existing ?: AlarmRule(id = ruleId)
+        matchRules.addAll(initial.matchRules)
+        actions.addAll(initial.actions)
+        pendingRequest = savedInstanceState?.getInt(KEY_REQUEST) ?: 0
+        pendingIndex = savedInstanceState?.getInt(KEY_INDEX, -1) ?: -1
+        pendingMatchId = savedInstanceState?.getString(KEY_MATCH_ID)
+        pendingActionType = savedInstanceState?.getString(KEY_ACTION_TYPE)?.let { value ->
+            ActionType.entries.firstOrNull { it.name == value }
         }
         buildScreen()
-        existing?.let { rule ->
-            nameField.setText(rule.name)
-            descriptionField.setText(rule.description)
-        }
+        nameField.setText(initial.name)
+        descriptionField.setText(initial.description)
         renderMatches()
         renderActions()
-        applyTriggerVisibility()
-    }
-
-    /** Screen triggers have no SMS conditions, so that card is hidden entirely. */
-    private fun applyTriggerVisibility() {
-        if (!::matchCard.isInitialized) return
-        matchCard.visibility = if (trigger.usesConditions) android.view.View.VISIBLE else android.view.View.GONE
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
-        outState.putString(KEY_ID, ruleId)
-        outState.putInt(KEY_FORWARD_INDEX, pendingForwardIndex)
-        outState.putStringArrayList(KEY_MATCH_ROWS, ArrayList(matchRules.map(::encodeMatch)))
-        outState.putStringArrayList(KEY_ACTION_ROWS, ArrayList(actions.map(::encodeAction)))
-        outState.putString(KEY_TRIGGER, trigger.name)
-        outState.putString(KEY_TRIGGER_DELAY, triggerDelayMs.toString())
+        outState.putString(KEY_DRAFT, RuleCodec.encodeRule(draft()).toString())
+        outState.putInt(KEY_REQUEST, pendingRequest)
+        outState.putInt(KEY_INDEX, pendingIndex)
+        outState.putString(KEY_MATCH_ID, pendingMatchId)
+        outState.putString(KEY_ACTION_TYPE, pendingActionType?.name)
         super.onSaveInstanceState(outState)
     }
 
-    private fun restoreDraft(state: Bundle) {
-        state.getStringArrayList(KEY_MATCH_ROWS)?.forEach { raw -> decodeMatch(raw)?.let { matchRules += it } }
-        state.getStringArrayList(KEY_ACTION_ROWS)?.forEach { raw -> decodeAction(raw)?.let { actions += it } }
-        state.getString(KEY_TRIGGER)?.let { name ->
-            trigger = TriggerSource.entries.firstOrNull { it.name == name } ?: TriggerSource.SMS
-        }
-        triggerDelayMs = state.getString(KEY_TRIGGER_DELAY)?.toLongOrNull() ?: 0L
+    override fun onResume() {
+        super.onResume()
+        if (::actionHost.isInitialized) renderActions()
     }
 
-    // region draft encoding (survives rotation without touching storage)
-
-    private fun encodeMatch(rule: MatchRule): String = listOf(
-        rule.id,
-        encodeCondition(rule.localNumber),
-        encodeCondition(rule.senderNumber),
-        encodeCondition(rule.body),
-    ).joinToString(SEPARATOR)
-
-    private fun decodeMatch(raw: String): MatchRule? {
-        val parts = raw.split(SEPARATOR)
-        if (parts.size != 4) return null
-        return MatchRule(
-            id = parts[0],
-            localNumber = decodeCondition(parts[1]),
-            senderNumber = decodeCondition(parts[2]),
-            body = decodeCondition(parts[3]),
-        )
-    }
-
-    private fun encodeCondition(condition: MatchCondition?): String =
-        if (condition == null) "" else condition.mode.name + "\u0002" + condition.value
-
-    private fun decodeCondition(raw: String): MatchCondition? {
-        if (raw.isEmpty()) return null
-        val parts = raw.split("\u0002", limit = 2)
-        if (parts.size != 2) return null
-        val mode = MatchMode.entries.firstOrNull { it.name == parts[0] } ?: return null
-        return MatchCondition(mode, parts[1])
-    }
-
-    private fun encodeAction(action: RuleAction): String = listOf(
-        action.type.name,
-        action.enabled.toString(),
-        action.delayMs.toString(),
-        action.durationSeconds.toString(),
-        action.repeatCount.toString(),
-        action.soundUri,
-        action.forwardIds.joinToString(","),
-    ).joinToString(SEPARATOR)
-
-    private fun decodeAction(raw: String): RuleAction? {
-        val parts = raw.split(SEPARATOR)
-        if (parts.size != 7) return null
-        val type = ActionType.entries.firstOrNull { it.name == parts[0] } ?: return null
-        return RuleAction(
-            type = type,
-            enabled = parts[1].toBooleanStrictOrNull() ?: true,
-            delayMs = parts[2].toLongOrNull() ?: 0L,
-            durationSeconds = parts[3].toIntOrNull() ?: 0,
-            repeatCount = parts[4].toIntOrNull() ?: 0,
-            soundUri = parts[5],
-            forwardIds = parts[6].split(",").filter(String::isNotBlank),
-        )
-    }
-
-    // endregion
+    private fun draft() = AlarmRule(
+        id = ruleId,
+        name = nameField.text.toString(),
+        description = descriptionField.text.toString(),
+        enabled = store.rule(ruleId)?.enabled ?: existing?.enabled ?: true,
+        matchRules = matchRules.toList(),
+        actions = actions.toList(),
+    )
 
     private fun buildScreen() = with(ui) {
         val root = column().apply { setBackgroundColor(BACKGROUND) }
@@ -207,35 +142,10 @@ class RuleEditActivity : Activity() {
         descriptionField = field("例如：生产环境群发，需要立刻处理", false, "规则描述")
         basic.addView(descriptionField)
 
-        val sourceCard = card(content)
-        section(sourceCard, "触发方式", "决定这条规则由什么事件启动。")
-        val sourceRow = row().apply { setPadding(dp(3), dp(3), dp(3), dp(3)); background = rounded(BACKGROUND, 10) }
-        val sourceChips = mutableListOf<Button>()
-        TriggerSource.entries.forEach { source ->
-            val chip = button(source.label, BACKGROUND, SECONDARY) {
-                trigger = source
-                sourceChips.forEachIndexed { i, b -> styleChip(b, TriggerSource.entries[i] == trigger) }
-                applyTriggerVisibility()
-            }.apply {
-                textSize = 12f; minHeight = dp(44); minimumHeight = dp(44)
-                setPadding(dp(4), dp(9), dp(4), dp(9))
-            }
-            sourceChips += chip
-            sourceRow.addView(chip, LinearLayout.LayoutParams(0, -2, 1f))
-        }
-        sourceChips.forEachIndexed { i, b -> styleChip(b, TriggerSource.entries[i] == trigger) }
-        sourceCard.addView(sourceRow); gap(sourceCard, 14)
-        sourceCard.addView(label("触发延迟（毫秒，0 表示立即）", 13, INK, true)); gap(sourceCard, 8)
-        triggerDelayField = field("0", false, "触发延迟毫秒").apply {
-            inputType = InputType.TYPE_CLASS_NUMBER
-            setText(triggerDelayMs.toString())
-        }
-        sourceCard.addView(triggerDelayField)
-
-        matchCard = card(content)
-        val matches = matchCard
-        section(matches, "触发条件", "每条触发条件内部条件同时满足；多条触发条件之间任意一条满足即可。")
+        val matches = card(content)
+        section(matches, "触发条件", "按列表顺序判断，满足任意一条即执行一次。长按左侧手柄调整顺序。")
         matchHost = DragSortColumn(this@RuleEditActivity).apply {
+            tag = "trigger_rows"
             onMove = { from, to ->
                 if (from in matchRules.indices && to in matchRules.indices) {
                     matchRules.add(to, matchRules.removeAt(from))
@@ -245,13 +155,13 @@ class RuleEditActivity : Activity() {
         }
         matches.addView(matchHost)
         gap(matches, 12)
-        matches.addView(button("+ 添加触发条件", SOFT, ACCENT) { showAddMatchSheet() }.apply {
+        matches.addView(button("+ 添加触发条件", SOFT, ACCENT) { openMatchEditor(null) }.apply {
             textSize = 14f; minHeight = dp(48); minimumHeight = dp(48)
         })
 
         val result = card(content)
         section(result, "命中后执行", "动作可以同时触发；转发目标在单独页面管理。")
-        actionHost = column()
+        actionHost = column().apply { tag = "action_rows" }
         result.addView(actionHost)
         gap(result, 12)
         result.addView(button("+ 添加结果动作", SOFT, ACCENT) { showAddActionSheet() }.apply {
@@ -274,10 +184,11 @@ class RuleEditActivity : Activity() {
         }
         matchRules.forEachIndexed { index, rule ->
             val row = column(14).apply {
+                tag = "trigger_row"
                 background = rounded(Color.WHITE, border = LINE)
                 isFocusable = true
                 contentDescription = "触发条件 ${index + 1}，${rule.summary()}"
-                setOnClickListener { showMatchEditor(index) }
+                setOnClickListener { openMatchEditor(index) }
             }
             val head = row()
             val handle = label("☰", 17, MUTED, true).apply {
@@ -290,7 +201,7 @@ class RuleEditActivity : Activity() {
                 }
             }
             head.addView(handle)
-            head.addView(label("触发条件 ${index + 1}", 14, INK, true), LinearLayout.LayoutParams(0, -2, 1f))
+            head.addView(label("${index + 1}. ${rule.source.label}", 14, INK, true), LinearLayout.LayoutParams(0, -2, 1f))
             head.addView(label("删除", 12, RED, true).apply {
                 setPadding(dp(10), dp(8), dp(6), dp(8))
                 background = rounded(RED_SOFT, 10)
@@ -304,86 +215,28 @@ class RuleEditActivity : Activity() {
             })
             row.addView(head)
             gap(row, 8)
-            rule.conditions().forEach { (field, condition) ->
-                row.addView(label("${field.label} · ${condition.mode.label} · ${condition.value}", 12, SECONDARY))
-                gap(row, 4)
-            }
+            row.addView(label(rule.summary(), 12, SECONDARY))
             matchHost.addView(row, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(10) })
         }
     }
 
-    private fun showAddMatchSheet() {
-        BottomSheet.show(this, "添加触发条件", "选择一种匹配方式") { body, dialog ->
-            body.addView(BottomSheet.option(ui, "手机号触发条件", "本机号码、对方号码、正文内容", Kind.MESSAGE) {
-                matchRules += MatchRule()
-                renderMatches()
-                dialog.dismiss()
-                showMatchEditor(matchRules.lastIndex)
-            })
-            body.addView(BottomSheet.option(ui, "HTTP(S) 触发条件", "按外部接口结果判断，暂未开放", Kind.TOOLS, enabled = false) {})
+    private fun openMatchEditor(index: Int?) {
+        val intent = if (index == null) Intent(this, TriggerTypeActivity::class.java) else {
+            val current = matchRules.getOrNull(index) ?: return
+            Intent(this, MatchRuleActivity::class.java)
+                .putExtra(MatchRuleActivity.EXTRA_MATCH, RuleCodec.encodeMatchRule(current).toString())
         }
+        launchEditor(intent, REQUEST_MATCH, index)
     }
 
-    private fun showMatchEditor(index: Int) {
-        val current = matchRules.getOrNull(index) ?: return
-        val readers = mutableMapOf<MatchField, () -> MatchCondition?>()
-        BottomSheet.show(
-            this, "触发条件 ${index + 1}", "留空表示不限制该条件",
-            onConfirm = { dialog ->
-                val updated = MatchRule(
-                    id = current.id,
-                    localNumber = readers[MatchField.LOCAL_NUMBER]?.invoke(),
-                    senderNumber = readers[MatchField.SENDER_NUMBER]?.invoke(),
-                    body = readers[MatchField.BODY]?.invoke(),
-                )
-                val error = updated.validationError()
-                if (error != null) {
-                    toast(error)
-                } else {
-                    matchRules[index] = updated
-                    renderMatches()
-                    dialog.dismiss()
-                }
-            },
-        ) { body, dialog ->
-            with(ui) {
-                MatchField.entries.forEach { field ->
-                    val existingCondition = when (field) {
-                        MatchField.LOCAL_NUMBER -> current.localNumber
-                        MatchField.SENDER_NUMBER -> current.senderNumber
-                        MatchField.BODY -> current.body
-                    }
-                    body.addView(label(field.label, 14, INK, true)); gap(body, 5)
-                    body.addView(label(field.hint, 11, MUTED)); gap(body, 8)
-                    val modeRow = row().apply {
-                        setPadding(dp(3), dp(3), dp(3), dp(3)); background = rounded(BACKGROUND, 10)
-                    }
-                    val modes = mutableListOf<Button>()
-                    var selectedMode = existingCondition?.mode ?: MatchMode.REGEX
-                    MatchMode.entries.forEach { mode ->
-                        val chip = button(mode.label, BACKGROUND, SECONDARY) {
-                            selectedMode = mode
-                            modes.forEachIndexed { i, b -> styleChip(b, MatchMode.entries[i] == selectedMode) }
-                        }.apply {
-                            textSize = 12f; minHeight = dp(40); minimumHeight = dp(40)
-                            setPadding(dp(4), dp(8), dp(4), dp(8))
-                        }
-                        modes += chip
-                        modeRow.addView(chip, LinearLayout.LayoutParams(0, -2, 1f))
-                    }
-                    modes.forEachIndexed { i, b -> styleChip(b, MatchMode.entries[i] == selectedMode) }
-                    body.addView(modeRow); gap(body, 8)
-                    val input = field("输入条件内容，留空表示不限制", field == MatchField.BODY, field.hint).apply {
-                        setText(existingCondition?.value.orEmpty())
-                    }
-                    body.addView(input); gap(body, 18)
-                    readers[field] = {
-                        val value = input.text.toString().trim()
-                        if (value.isEmpty()) null else MatchCondition(selectedMode, value)
-                    }
-                }
-            }
-        }
+    private fun launchEditor(intent: Intent, request: Int, index: Int?, type: ActionType? = null) {
+        if (pendingRequest != 0) return
+        pendingRequest = request
+        pendingIndex = index ?: -1
+        pendingActionType = type
+        pendingMatchId = if (request == REQUEST_MATCH) index?.let { matchRules.getOrNull(it)?.id } else null
+        try { startActivityForResult(intent, request) }
+        catch (_: RuntimeException) { clearPending(); showError("页面打开失败，请重试") }
     }
 
     // endregion
@@ -400,15 +253,25 @@ class RuleEditActivity : Activity() {
             return
         }
         actions.forEachIndexed { index, action ->
+            val available = store.state().forwardsFor(action).size
+            val targetName = if (action.operation == ActionOperation.STOP && action.stopScope == StopScope.SPECIFIC_RULE) {
+                when {
+                    action.targetRuleId.isBlank() -> "目标未选择"
+                    action.targetRuleId == ruleId -> nameField.text.toString().ifBlank { "本规则（正在编辑）" }
+                    else -> store.rule(action.targetRuleId)?.name ?: "目标已删除（" + action.targetRuleId + "）"
+                }
+            } else null
+            val summary = action.summary(available, targetName)
             val row = row().apply {
+                tag = "action_row"
                 setPadding(dp(2), dp(12), dp(2), dp(12))
                 minimumHeight = dp(58)
                 isFocusable = true
-                contentDescription = "${action.type.label}，${action.summary()}"
+                contentDescription = summary
                 setOnClickListener {
                     when {
                         action.type == ActionType.FORWARD -> openForwardPicker(index)
-                        else -> openActionConfig(index)
+                        else -> openActionConfig(index, action.type)
                     }
                 }
             }
@@ -416,9 +279,8 @@ class RuleEditActivity : Activity() {
                 setPadding(dp(9), dp(9), dp(9), dp(9)); background = rounded(SOFT, 12)
             }, LinearLayout.LayoutParams(dp(40), dp(40)).apply { marginEnd = dp(13) })
             val text = column()
-            text.addView(label(action.type.label, 14, INK, true)); gap(text, 4)
-            val available = store.state().forwardsFor(action).size
-            text.addView(label(action.summary(available), 12, SECONDARY))
+            text.addView(label(action.type.label + " · " + action.operation.label, 14, INK, true)); gap(text, 4)
+            text.addView(label(summary, 12, SECONDARY))
             row.addView(text, LinearLayout.LayoutParams(0, -2, 1f))
             row.addView(label("删除", 12, RED, true).apply {
                 setPadding(dp(10), dp(8), dp(6), dp(8)); background = rounded(RED_SOFT, 10)
@@ -445,90 +307,131 @@ class RuleEditActivity : Activity() {
     private fun showAddActionSheet() {
         BottomSheet.show(this, "添加结果动作", "可以多次添加，命中时同时执行") { body, dialog ->
             body.addView(BottomSheet.option(ui, "转发", "推送到 HTTP(S) 服务或飞书群", Kind.COPY) {
-                actions += RuleAction(ActionType.FORWARD)
-                renderActions()
                 dialog.dismiss()
-                openForwardPicker(actions.lastIndex)
+                openForwardPicker(null)
             })
             body.addView(BottomSheet.option(ui, "响铃", "循环响铃，可自定义音乐", Kind.BELL) {
-                actions += RuleAction.local(ActionType.RING); renderActions(); dialog.dismiss(); openActionConfig(actions.lastIndex)
+                dialog.dismiss(); openActionConfig(null, ActionType.RING)
             })
             body.addView(BottomSheet.option(ui, "振动", "原生循环振动", Kind.VIBRATE) {
-                actions += RuleAction.local(ActionType.VIBRATE); renderActions(); dialog.dismiss(); openActionConfig(actions.lastIndex)
+                dialog.dismiss(); openActionConfig(null, ActionType.VIBRATE)
             })
             body.addView(BottomSheet.option(ui, "闪光灯", "手电筒闪烁", Kind.INFO) {
-                actions += RuleAction.local(ActionType.FLASH); renderActions(); dialog.dismiss(); openActionConfig(actions.lastIndex)
+                dialog.dismiss(); openActionConfig(null, ActionType.FLASH)
             })
         }
     }
 
-    private fun openActionConfig(index: Int) {
-        val action = actions.getOrNull(index) ?: return
-        pendingActionIndex = index
-        startActivityForResult(
-            Intent(this, ActionConfigActivity::class.java)
-                .putExtra(ActionConfigActivity.EXTRA_TYPE, action.type.name)
-                .putExtra(ActionConfigActivity.EXTRA_ENABLED, action.enabled)
-                .putExtra(ActionConfigActivity.EXTRA_DELAY, action.delayMs)
-                .putExtra(ActionConfigActivity.EXTRA_DURATION, action.durationSeconds)
-                .putExtra(ActionConfigActivity.EXTRA_REPEAT, action.repeatCount)
-                .putExtra(ActionConfigActivity.EXTRA_SOUND, action.soundUri),
-            REQUEST_ACTION,
-        )
+    private fun openActionConfig(index: Int?, type: ActionType) {
+        val action = if (index == null) RuleAction(type) else actions.getOrNull(index) ?: return
+        launchEditor(Intent(this, ActionConfigActivity::class.java)
+            .putExtra(ActionConfigActivity.EXTRA_TYPE, action.type.name)
+            .putExtra(ActionConfigActivity.EXTRA_ENABLED, action.enabled)
+            .putExtra(ActionConfigActivity.EXTRA_DELAY, action.delayMs)
+            .putExtra(ActionConfigActivity.EXTRA_DURATION, action.durationSeconds)
+            .putExtra(ActionConfigActivity.EXTRA_REPEAT, action.repeatCount)
+            .putExtra(ActionConfigActivity.EXTRA_SOUND, action.soundUri)
+            .putExtra(ActionConfigActivity.EXTRA_OPERATION, action.operation.name)
+            .putExtra(ActionConfigActivity.EXTRA_STOP_SCOPE, action.stopScope.name)
+            .putExtra(ActionConfigActivity.EXTRA_TARGET_RULE_ID, action.targetRuleId)
+            .putExtra(ActionConfigActivity.EXTRA_OWNER_RULE_ID, ruleId), REQUEST_ACTION, index, action.type)
     }
 
-    private fun openForwardPicker(index: Int) {
-        val action = actions.getOrNull(index) ?: return
-        pendingForwardIndex = index
-        startActivityForResult(
-            Intent(this, ForwardPickerActivity::class.java)
-                .putStringArrayListExtra(ForwardPickerActivity.EXTRA_SELECTED, ArrayList(action.forwardIds)),
-            REQUEST_FORWARD,
-        )
+    private fun openForwardPicker(index: Int?) {
+        val action = if (index == null) RuleAction(ActionType.FORWARD) else actions.getOrNull(index) ?: return
+        launchEditor(Intent(this, ForwardPickerActivity::class.java)
+            .putStringArrayListExtra(ForwardPickerActivity.EXTRA_SELECTED, ArrayList(action.forwardIds)),
+            REQUEST_FORWARD, index, ActionType.FORWARD)
     }
 
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+    public override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == REQUEST_ACTION && resultCode == RESULT_OK) {
-            val index = pendingActionIndex
-            if (index in actions.indices) {
-                val current = actions[index]
-                actions[index] = current.copy(
-                    enabled = data?.getBooleanExtra(ActionConfigActivity.EXTRA_ENABLED, true) ?: true,
-                    delayMs = data?.getLongExtra(ActionConfigActivity.EXTRA_DELAY, 0L) ?: 0L,
-                    durationSeconds = data?.getIntExtra(ActionConfigActivity.EXTRA_DURATION, 0) ?: 0,
-                    repeatCount = data?.getIntExtra(ActionConfigActivity.EXTRA_REPEAT, 0) ?: 0,
-                    soundUri = data?.getStringExtra(ActionConfigActivity.EXTRA_SOUND).orEmpty(),
-                )
-                renderActions()
+        if (requestCode != pendingRequest || pendingRequest == 0) return
+        val index = pendingIndex
+        val matchId = pendingMatchId
+        val expectedType = pendingActionType
+        clearPending()
+        if (resultCode != RESULT_OK || data == null) return
+        when (requestCode) {
+            REQUEST_MATCH -> {
+                val updated = data.getStringExtra(MatchRuleActivity.EXTRA_MATCH)?.let {
+                    runCatching { RuleCodec.decodeMatchRule(org.json.JSONObject(it)) }.getOrNull()
+                } ?: return
+                updated.validationError()?.let { showError(it); return }
+                if (index == -1) {
+                    if (matchRules.size >= 20) { showError("触发条件最多 20 条"); return }
+                    matchRules += updated
+                } else {
+                    val position = matchRules.indexOfFirst { it.id == matchId }
+                    if (position < 0) return
+                    matchRules[position] = updated.copy(id = matchRules[position].id)
+                }
+                renderMatches()
             }
-            pendingActionIndex = -1
-            return
-        }
-        if (requestCode == REQUEST_FORWARD && resultCode == RESULT_OK) {
-            val ids = data?.getStringArrayListExtra(ForwardPickerActivity.EXTRA_SELECTED) ?: emptyList()
-            val index = pendingForwardIndex
-            if (index in actions.indices) {
-                actions[index] = actions[index].copy(forwardIds = ids)
-                renderActions()
+            REQUEST_ACTION -> {
+                val type = data.getStringExtra(ActionConfigActivity.EXTRA_TYPE)?.let { name ->
+                    ActionType.entries.firstOrNull { it.name == name }
+                } ?: return
+                if (type != expectedType || !type.isLocal) return
+                if (data.getStringExtra(ActionConfigActivity.EXTRA_OWNER_RULE_ID) != ruleId) return
+                val operation = ActionOperation.entries.firstOrNull {
+                    it.name == data.getStringExtra(ActionConfigActivity.EXTRA_OPERATION)
+                } ?: return
+                val scope = StopScope.entries.firstOrNull {
+                    it.name == data.getStringExtra(ActionConfigActivity.EXTRA_STOP_SCOPE)
+                } ?: return
+                val target = data.getStringExtra(ActionConfigActivity.EXTRA_TARGET_RULE_ID) ?: return
+                val stop = operation == ActionOperation.STOP
+                val updated = RuleAction(type,
+                    enabled = true,
+                    delayMs = data.getLongExtra(ActionConfigActivity.EXTRA_DELAY, 0L),
+                    durationSeconds = if (stop) 0 else data.getIntExtra(ActionConfigActivity.EXTRA_DURATION, 0),
+                    repeatCount = if (stop) 0 else data.getIntExtra(ActionConfigActivity.EXTRA_REPEAT, 0),
+                    soundUri = if (stop) "" else data.getStringExtra(ActionConfigActivity.EXTRA_SOUND).orEmpty(),
+                    operation = operation,
+                    stopScope = if (stop) scope else StopScope.THIS_RULE,
+                    targetRuleId = if (stop && scope == StopScope.SPECIFIC_RULE)
+                        target else "")
+                commitAction(index, updated)
             }
-            pendingForwardIndex = -1
+            REQUEST_FORWARD -> {
+                val ids = data.getStringArrayListExtra(ForwardPickerActivity.EXTRA_SELECTED)?.distinct() ?: return
+                if (ids.size != 1 || store.forward(ids.single()) == null) return
+                val updated = (actions.getOrNull(index)?.takeIf { it.type == ActionType.FORWARD }
+                    ?: RuleAction(ActionType.FORWARD)).copy(forwardIds = ids, enabled = true,
+                        operation = ActionOperation.START, stopScope = StopScope.THIS_RULE, targetRuleId = "")
+                commitAction(index, updated)
+            }
         }
+    }
+
+    private fun commitAction(index: Int, updated: RuleAction) {
+        updated.validationError()?.let { showError(it); return }
+        if (missingStopTarget(updated)) { showError("停止目标规则已删除，请重新选择"); return }
+        if (index == -1) {
+            if (actions.size >= 20) { showError("结果动作最多 20 个"); return }
+            actions += updated
+        } else if (index in actions.indices) actions[index] = updated else return
+        renderActions()
+    }
+
+    private fun missingStopTarget(action: RuleAction): Boolean =
+        action.operation == ActionOperation.STOP && action.stopScope == StopScope.SPECIFIC_RULE &&
+            action.targetRuleId != ruleId && store.rule(action.targetRuleId) == null
+
+    private fun clearPending() {
+        pendingRequest = 0; pendingIndex = -1; pendingMatchId = null; pendingActionType = null
+    }
+
+    private fun showError(message: String) {
+        AlertDialog.Builder(this).setTitle("请检查配置").setMessage(message)
+            .setPositiveButton("知道了", null).show()
     }
 
     // endregion
 
     private fun save() {
-        val rule = AlarmRule(
-            id = ruleId,
-            name = nameField.text.toString().trim(),
-            description = descriptionField.text.toString().trim(),
-            enabled = existing?.enabled ?: true,
-            trigger = trigger,
-            triggerDelayMs = triggerDelayField.text.toString().trim().toLongOrNull() ?: 0L,
-            matchRules = matchRules.toList(),
-            actions = actions.toList(),
-        )
+        val rule = draft().let { it.copy(name = it.name.trim(), description = it.description.trim()) }
         val error = rule.validationError()
         if (error != null) {
             AlertDialog.Builder(this)
@@ -538,6 +441,7 @@ class RuleEditActivity : Activity() {
                 .show()
             return
         }
+        if (rule.actions.any(::missingStopTarget)) { showError("停止目标规则已删除，请重新选择"); return }
         if (!store.saveRule(rule)) {
             AlertDialog.Builder(this).setTitle("保存失败").setMessage("请稍后重试").setPositiveButton("知道了", null).show()
             return
@@ -559,14 +463,13 @@ class RuleEditActivity : Activity() {
 
     companion object {
         const val EXTRA_ID = "rule_id"
-        private const val KEY_ID = "draft_id"
-        private const val KEY_MATCH_ROWS = "draft_match_rows"
-        private const val KEY_ACTION_ROWS = "draft_action_rows"
-        private const val KEY_FORWARD_INDEX = "draft_forward_index"
-        private const val KEY_TRIGGER = "draft_trigger"
-        private const val KEY_TRIGGER_DELAY = "draft_trigger_delay"
         private const val REQUEST_FORWARD = 2001
         private const val REQUEST_ACTION = 2002
-        private const val SEPARATOR = "\u0001"
+        private const val REQUEST_MATCH = 2003
+        private const val KEY_DRAFT = "editor_draft_json"
+        private const val KEY_REQUEST = "pending_request"
+        private const val KEY_INDEX = "pending_index"
+        private const val KEY_MATCH_ID = "pending_match_id"
+        private const val KEY_ACTION_TYPE = "pending_action_type"
     }
 }

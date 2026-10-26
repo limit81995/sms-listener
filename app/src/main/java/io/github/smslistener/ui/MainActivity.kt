@@ -41,6 +41,7 @@ import io.github.smslistener.core.RuleMatch
 import io.github.smslistener.core.RuleMatcher
 import io.github.smslistener.core.SmsSubject
 import io.github.smslistener.data.AppStore
+import io.github.smslistener.data.ConfigFileManager
 import io.github.smslistener.monitor.MonitorService
 import io.github.smslistener.ui.SentinelIcon.Kind
 import io.github.smslistener.ui.UiKit.Companion.ACCENT
@@ -73,6 +74,8 @@ class MainActivity : Activity() {
     private lateinit var statsLabel: TextView
     private lateinit var ruleListHost: LinearLayout
     private lateinit var ruleCountLabel: TextView
+    private lateinit var configFileCard: LinearLayout
+    private lateinit var configFileText: TextView
 
     private val navButtons = mutableListOf<LinearLayout>()
     private val pages = mutableListOf<ScrollView>()
@@ -80,7 +83,10 @@ class MainActivity : Activity() {
     private var restoring = true
     private var testStarting = false
     private val handler = Handler(Looper.getMainLooper())
-    private val preferencesChanged = SharedPreferences.OnSharedPreferenceChangeListener { _, _ -> refreshStatus() }
+    private val preferencesChanged = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+        refreshStatus()
+        if (key == "state_v2" || key == null) renderRules()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -111,7 +117,7 @@ class MainActivity : Activity() {
     }
 
     override fun onStart() { super.onStart(); store.observe(preferencesChanged) }
-    override fun onResume() { super.onResume(); refreshStatus() }
+    override fun onResume() { super.onResume(); refreshStatus(); renderRules(); ConfigFileManager.opened(this) }
     override fun onStop() { store.removeObserver(preferencesChanged); super.onStop() }
     override fun onDestroy() { handler.removeCallbacksAndMessages(null); super.onDestroy() }
 
@@ -215,6 +221,14 @@ class MainActivity : Activity() {
         statsLabel = label("", 12, Color.rgb(170, 200, 190))
         hero.addView(statsLabel)
 
+        configFileCard = card(parent)
+        section(configFileCard, "配置文件")
+        configFileText = label("", 13, SECONDARY)
+        configFileCard.addView(configFileText); gap(configFileCard, 12)
+        configFileCard.addView(button("配置文件", SOFT, ACCENT) {
+            startActivity(Intent(this@MainActivity, ConfigFileActivity::class.java))
+        }.apply { tag = "home_config_file" })
+
         val activity = card(parent)
         val line = row()
         line.addView(label("最新动态", 17, bold = true), LinearLayout.LayoutParams(0, -2, 1f))
@@ -252,6 +266,10 @@ class MainActivity : Activity() {
 
     private fun buildSettings(parent: LinearLayout) = with(ui) {
         val entries = card(parent)
+        actionRow(entries, "配置文件", "引用同一个文件，修改自动保存，重装后继续使用", Kind.COPY) {
+            startActivity(Intent(this@MainActivity, ConfigFileActivity::class.java))
+        }
+        divider(entries)
         actionRow(entries, "转发规则", "维护 HTTP(S) 与飞书目标，规则里直接选择", Kind.COPY) {
             startActivityForResult(Intent(this@MainActivity, ForwardLibraryActivity::class.java), REQUEST_FORWARD)
         }
@@ -314,7 +332,11 @@ private fun selectTab(index: Int, animate: Boolean = true) {
             empty.addView(icon(Kind.RULES, MUTED, 28))
             gap(empty, 12)
             empty.addView(label("还没有规则", 16, bold = true)); gap(empty, 6)
-            empty.addView(label("点击上方“新建规则”，设置条件与命中后的动作。", 13, SECONDARY))
+            empty.addView(label("点击上方“新建规则”，设置条件与命中后的动作。重装后可从配置文件恢复。", 13, SECONDARY))
+            gap(empty, 14)
+            empty.addView(button("引用已有配置文件", SOFT, ACCENT) {
+                startActivity(Intent(this@MainActivity, ConfigFileActivity::class.java))
+            }.apply { tag = "use_config_file" })
             return
         }
         state.rules.forEach { rule ->
@@ -403,6 +425,10 @@ private fun selectTab(index: Int, animate: Boolean = true) {
         if (!::heroTitle.isInitialized || restoring) return
         val state = store.state()
         val active = state.activeRules()
+        val fileError = ConfigFileManager(this).status().error
+        configFileCard.visibility = if ((state.rules.isEmpty() && state.forwards.isEmpty()) || fileError.isNotBlank()) View.VISIBLE else View.GONE
+        configFileText.text = if (fileError.isNotBlank()) "配置文件需要处理：" + fileError
+            else "首次使用可创建规则；重新安装后，引用原来的配置文件即可使用。"
         alarmBanner.visibility = if (AlarmService.active) View.VISIBLE else View.GONE
         if (AlarmService.active) testStarting = false
 

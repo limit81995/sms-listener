@@ -13,7 +13,7 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 APK = Path("app/build/outputs/apk/debug/app-debug.apk")
-ACTIVITY = "io.github.smssentinel/.ui.MainActivity"
+ACTIVITY = "io.github.smslistener/.ui.MainActivity"
 WATCH_FILES = (
     "build.gradle.kts", "settings.gradle.kts", "gradle.properties",
     "local.properties", "gradlew", "app/build.gradle.kts",

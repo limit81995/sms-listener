@@ -10,8 +10,8 @@ android {
         applicationId = "io.github.smslistener"
         minSdk = 26
         targetSdk = 36
-        versionCode = 7
-        versionName = "0.7.0"
+        versionCode = 11
+        versionName = "0.11.0"
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

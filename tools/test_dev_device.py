@@ -1,6 +1,7 @@
 """Behavior checks for the development loop; never contact a real phone."""
 
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import unittest
@@ -56,6 +57,12 @@ class DevicePreviewTests(unittest.TestCase):
         for call in run.call_args_list[1:]:
             self.assertEqual(call.args[0][:3], [self.adb, "-s", self.serial])
         self.assertEqual(run.call_args.args[0][-1], dev.ACTIVITY)
+
+    def test_launch_component_matches_project_application_id(self):
+        project = Path(dev.__file__).resolve().parents[1]
+        build = (project / "app/build.gradle.kts").read_text()
+        application_id = re.search(r'applicationId\s*=\s*"([^"]+)"', build).group(1)
+        self.assertEqual(dev.ACTIVITY, application_id + "/.ui.MainActivity")
 
     def test_activity_error_is_failure_even_with_zero_exit_code(self):
         self.write(dev.APK)
