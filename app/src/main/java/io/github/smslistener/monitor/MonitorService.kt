@@ -93,7 +93,7 @@ class MonitorService : Service() {
                 addAction(Intent.ACTION_USER_PRESENT)
                 addAction(Intent.ACTION_SCREEN_OFF)
             }
-            if (Build.VERSION.SDK_INT >= 33) registerReceiver(candidate, filter, Context.RECEIVER_NOT_EXPORTED)
+            if (Build.VERSION.SDK_INT >= 33) registerReceiver(candidate, filter, Context.RECEIVER_EXPORTED)
             else registerReceiver(candidate, filter)
             wakeReceiver = candidate
         }

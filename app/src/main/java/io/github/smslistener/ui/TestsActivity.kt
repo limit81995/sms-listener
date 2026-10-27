@@ -6,12 +6,14 @@ import android.graphics.Color
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.view.Gravity
 import android.view.View
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import io.github.smslistener.action.ActionExecutor
+import io.github.smslistener.alarm.AlarmController
 import io.github.smslistener.alarm.AlarmService
 import io.github.smslistener.alarm.AlarmSpec
 import io.github.smslistener.core.RuleMatch
@@ -33,6 +35,8 @@ class TestsActivity : Activity() {
     private lateinit var status: TextView
     private val handler = Handler(Looper.getMainLooper())
     private var starting = false
+    private var testDialog: AlertDialog? = null
+    private var testWatch: Runnable? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -90,7 +94,7 @@ class TestsActivity : Activity() {
         actionRow(match, "开始检查", "不会产生报警或发送网络请求", Kind.RULES) { simulateSms() }
 
         gap(content, 10)
-        content.addView(label("测试会中断当前的报警；报警进行中时需先停止。", 11, MUTED))
+        content.addView(label("报警进行中时不能启动测试，请先停止报警。", 11, MUTED))
         setContentView(root)
     }
 
@@ -105,8 +109,57 @@ class TestsActivity : Activity() {
             return
         }
         starting = true
-        status.text = if (ActionExecutor.runLocal(this, spec, reason)) "测试已启动：$reason" else "启动失败，请查看运行日志"
+        if (!ActionExecutor.runLocal(this, spec, reason)) {
+            starting = false
+            status.text = "启动失败，请查看运行日志"
+            return
+        }
+        status.text = "测试已启动：$reason"
+        showTestingDialog(reason, spec.durationSeconds)
         handler.postDelayed({ starting = false }, 1000)
+    }
+
+    /** One visible owner for the test, so the running alarm can always be stopped in place. */
+    private fun showTestingDialog(reason: String, seconds: Int) {
+        testDialog?.dismiss()
+        val startedAt = SystemClock.elapsedRealtime()
+        val ending = if (seconds > 0) "${seconds} 秒后自动结束" else "直到手动停止"
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("测试中")
+            .setMessage("$reason 正在运行，$ending。")
+            .setPositiveButton("停止", null)
+            .setCancelable(false)
+            .create()
+        testDialog = dialog
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                AlarmController.stop(this@TestsActivity)
+                status.text = "已停止测试"
+                dialog.dismiss()
+            }
+        }
+        dialog.setOnDismissListener {
+            testWatch?.let(handler::removeCallbacks)
+            testWatch = null
+            if (testDialog === dialog) testDialog = null
+        }
+        dialog.show()
+        var sawActive = AlarmService.active
+        val watch = object : Runnable {
+            override fun run() {
+                if (testDialog !== dialog) return
+                if (AlarmService.active) {
+                    sawActive = true
+                } else if (sawActive || SystemClock.elapsedRealtime() - startedAt > 3000) {
+                    if (!sawActive) status.text = "测试未保持运行，请查看运行日志"
+                    dialog.dismiss()
+                    return
+                }
+                handler.postDelayed(this, 250)
+            }
+        }
+        testWatch = watch
+        handler.postDelayed(watch, 250)
     }
 
     private fun updateStatus() {
@@ -146,6 +199,9 @@ class TestsActivity : Activity() {
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
+        testDialog?.dismiss()
+        testDialog = null
+        testWatch = null
         super.onDestroy()
     }
 }

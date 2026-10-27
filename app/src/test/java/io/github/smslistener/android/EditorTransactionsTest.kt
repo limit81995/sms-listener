@@ -145,7 +145,7 @@ class EditorTransactionsTest {
         assertEquals(Activity.RESULT_CANCELED, shadowOf(types).resultCode)
     }
 
-    @Test fun emptyAndInvalidSmsStayInConfigAndBackNeverAddsATrigger() {
+    @Test fun blankSmsAddsOneUnrestrictedTrigger() {
         val parent = parent()
         val request = beginMatch(parent)
         val types = launch(TriggerTypeActivity::class.java, request.intent).get()
@@ -154,8 +154,24 @@ class EditorTransactionsTest {
         MatchFieldTags.forEach { assertNotNull(tagged<EditText>(config, it)) }
         assertNull(root(config).findViewWithTag<View>("condition_delay"))
         click(config, "确定")
-        assertValidationDialog(config, "每条触发条件至少填写一个条件")
-        assertRows(parent, 0, 0)
+        assertTrue(config.isFinishing)
+        assertEquals(Activity.RESULT_OK, shadowOf(config).resultCode)
+        val saved = matchResult(shadowOf(config).resultIntent)
+        assertEquals(TriggerSource.SMS, saved.source)
+        assertTrue(saved.conditions().isEmpty())
+        assertNull(saved.validationError())
+        types.onActivityResult(configRequest.requestCode, shadowOf(config).resultCode, shadowOf(config).resultIntent)
+        deliver(parent, request, types)
+        assertEquals(listOf(saved), draft(parent).matchRules)
+        assertRows(parent, 1, 0)
+    }
+
+    @Test fun invalidSmsStaysInConfigAndBackNeverAddsATrigger() {
+        val parent = parent()
+        val request = beginMatch(parent)
+        val types = launch(TriggerTypeActivity::class.java, request.intent).get()
+        val configRequest = chooseType(types, TriggerSource.SMS)
+        val config = launch(MatchRuleActivity::class.java, configRequest.intent).get()
         tagged<EditText>(config, "condition_BODY").setText("[")
         assertTrue(tagged<View>(config, "mode_BODY_REGEX").performClick())
         click(config, "确定")
@@ -605,7 +621,6 @@ class EditorTransactionsTest {
         val invalidResults = listOf(null, Intent(),
             Intent().putExtra(MatchRuleActivity.EXTRA_MATCH, "not-json"),
             Intent().putExtra(MatchRuleActivity.EXTRA_MATCH, "[]"),
-            Intent().putExtra(MatchRuleActivity.EXTRA_MATCH, "{}"),
             Intent().putExtra(MatchRuleActivity.EXTRA_MATCH, "{\"source\":\"UNKNOWN\"}"),
             matchIntent(MatchRule(source = TriggerSource.HTTP)),
             matchIntent(MatchRule(source = TriggerSource.LOCK, delayMs = -1)),

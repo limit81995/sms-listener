@@ -103,8 +103,10 @@ class RuleMatcherTest {
         assertEquals(2, hits.size)
     }
 
-    @Test fun ruleWithoutAnyConditionIsRejected() {
-        assertNotNull(rule(matchRules = listOf(MatchRule())).validationError())
+    @Test fun ruleWithoutAnyConditionIsUnrestrictedButRuleWithoutGroupsIsRejected() {
+        val unrestricted = rule(matchRules = listOf(MatchRule()))
+        assertNull(unrestricted.validationError())
+        assertEquals(RuleMatch.MATCHED, RuleMatcher.evaluate(unrestricted, subject(body = "任意短信")))
         assertNotNull(rule(matchRules = emptyList()).validationError())
         assertNull(rule(body = condition(MatchMode.CONTAINS, "告警")).validationError())
     }

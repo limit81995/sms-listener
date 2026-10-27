@@ -242,7 +242,9 @@ class MainActivity : Activity() {
         activity.isFocusable = true
         activity.setOnClickListener { startActivity(Intent(this@MainActivity, LogsActivity::class.java)) }
 
-        actionRow(card(parent, 16), "运行准备", "检查权限与后台设置", Kind.CHECK) { selectTab(3) }
+        actionRow(card(parent, 16), "运行准备检查", "权限与后台设置", Kind.CHECK) {
+            startActivity(Intent(this@MainActivity, PermissionsActivity::class.java))
+        }
         gap(parent, 8)
         parent.addView(label("仅在本机处理 · 无需账号", 11, MUTED).apply { gravity = Gravity.CENTER })
     }

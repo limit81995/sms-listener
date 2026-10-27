@@ -18,6 +18,14 @@ class TriggerConditionsTest {
         assertEquals(0L, MatchRule().delayMs)
     }
 
+    @Test fun blankSmsConditionIsUnrestrictedAndValid() {
+        val all = MatchRule(id = "all")
+        assertNull(all.validationError())
+        assertTrue(all.matches(SmsSubject(sender = "10086", body = "任意内容")))
+        assertEquals(all, RuleMatcher.firstMatch(rule(all), TriggerSource.SMS, SmsSubject(body = "任意内容")))
+        assertEquals(RuleMatch.MATCHED, RuleMatcher.evaluate(rule(all), SmsSubject()))
+    }
+
     @Test fun mixedRuleMatchesEachSourceIndependently() {
         val rule = rule(unlock, sms, lock)
         assertNull(rule.validationError())

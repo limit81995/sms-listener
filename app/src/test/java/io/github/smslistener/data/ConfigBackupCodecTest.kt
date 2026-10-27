@@ -125,6 +125,11 @@ class ConfigBackupCodecTest {
         }
     }
 
+    @Test fun unrestrictedSmsConditionRoundTrips() {
+        val unrestricted = state.copy(rules = listOf(rule.copy(matchRules = listOf(MatchRule(id = "all")))))
+        assertEquals(unrestricted, ConfigBackupCodec.decode(ConfigBackupCodec.encode(unrestricted)))
+    }
+
     @Test fun allDisabledRulesAndActionsArePreserved() {
         val disabled = state.copy(rules = state.rules.map { item ->
             item.copy(enabled = false, actions = item.actions.map { it.copy(enabled = false) })
@@ -385,7 +390,6 @@ class ConfigBackupCodecTest {
             rule.copy(matchRules = emptyList()), rule.copy(actions = emptyList()),
             rule.copy(matchRules = List(21) { rule.matchRules.first().copy(id = "g-" + it) }),
             rule.copy(actions = List(21) { RuleAction(ActionType.FLASH) }),
-            rule.copy(matchRules = listOf(MatchRule(id = "empty"))),
             rule.copy(matchRules = listOf(MatchRule(id = "blank", body = MatchCondition(MatchMode.CONTAINS, " ")))),
             rule.copy(matchRules = listOf(MatchRule(id = "long", body = MatchCondition(MatchMode.CONTAINS, "x".repeat(501))))),
             rule.copy(matchRules = listOf(MatchRule(id = "regex", body = MatchCondition(MatchMode.REGEX, "fixture-private[")))),

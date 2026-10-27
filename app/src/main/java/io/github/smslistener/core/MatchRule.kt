@@ -82,7 +82,6 @@ data class MatchRule(
             }
             TriggerSource.SMS -> Unit
         }
-        if (isEmpty) return "每条触发条件至少填写一个条件"
         conditions().forEach { (_, condition) ->
             condition.validationError()?.let { return it }
         }
@@ -98,12 +97,12 @@ data class MatchRule(
                 MatchField.BODY -> condition.matches(subject.body)
             }
         }
-        return results.isNotEmpty() && results.all { it }
+        return results.all { it }
     }
 
     fun summary(): String = when (source) {
         TriggerSource.SMS -> conditions().joinToString(" + ") { (field, condition) -> condition.summary(field) }
-            .ifEmpty { "未设置条件" }
+            .ifEmpty { "不限制（命中所有短信）" }
         TriggerSource.LOCK, TriggerSource.UNLOCK -> source.label +
             if (delayMs > 0) " · 延迟 ${delayMs}ms" else " · 立即触发"
         TriggerSource.HTTP -> "HTTP(S) 触发尚未开放"

@@ -43,7 +43,7 @@ class MatchRuleActivity : Activity() {
         val content = EditorPage.create(this, (if (editing) "编辑" else "新建") + source.label + "条件", "确定", ::confirm)
         val card = ui.card(content)
         if (source == TriggerSource.SMS) {
-            ui.section(card, "短信", "留空表示不限制该项；填写的项目需要同时满足。")
+            ui.section(card, "短信", "留空表示不限制该项；填写的项目需要同时满足；三项都留空表示命中所有短信。")
             MatchField.entries.forEachIndexed { index, field ->
                 val old = when (field) {
                     MatchField.LOCAL_NUMBER -> original?.localNumber
