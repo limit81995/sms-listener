@@ -44,5 +44,6 @@ class SmsProcessor(private val context: Context) {
         val hits = RuleMatcher.matched(state.activeRules(), subject)
         store.log("收到短信（${parts.size} 段），命中 ${hits.size} 条规则")
         if (hits.isNotEmpty()) ActionExecutor.dispatch(context, hits, subject)
+        else store.log("短信未启动报警：请检查已保存的条件；任意短信需三项留空并保存整条规则")
     }
 }

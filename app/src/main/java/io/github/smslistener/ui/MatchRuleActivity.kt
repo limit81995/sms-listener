@@ -44,6 +44,10 @@ class MatchRuleActivity : Activity() {
         val card = ui.card(content)
         if (source == TriggerSource.SMS) {
             ui.section(card, "短信", "留空表示不限制该项；填写的项目需要同时满足；三项都留空表示命中所有短信。")
+            card.addView(ui.button("设为任意短信（三项不限）", UiKit.SOFT, UiKit.ACCENT) {
+                editors.values.forEach { it.setText("") }
+            }.apply { tag = "unrestricted_sms" })
+            ui.gap(card, 14)
             MatchField.entries.forEachIndexed { index, field ->
                 val old = when (field) {
                     MatchField.LOCAL_NUMBER -> original?.localNumber
@@ -88,7 +92,7 @@ class MatchRuleActivity : Activity() {
             }
         }
         ui.gap(content, 8)
-        content.addView(ui.label("点击右上角“确定”后加入规则；返回会放弃本次修改。", 12, UiKit.MUTED))
+        content.addView(ui.label("点击右上角“确定”后返回规则页，再点击“保存”才会生效；返回会放弃本次修改。", 12, UiKit.MUTED))
     }
 
     override fun onSaveInstanceState(outState: Bundle) {

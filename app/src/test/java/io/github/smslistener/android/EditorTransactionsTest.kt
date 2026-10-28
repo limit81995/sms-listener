@@ -166,6 +166,43 @@ class EditorTransactionsTest {
         assertRows(parent, 1, 0)
     }
 
+    @Test fun unrestrictedShortcutClearsExistingFiltersAndPersistsOnlyAfterParentSave() {
+        val original = fixture().copy(matchRules = listOf(MatchRule(id = "sms-original",
+            localNumber = MatchCondition(MatchMode.EQUALS, "13800138000"),
+            senderNumber = MatchCondition(MatchMode.CONTAINS, "12123"),
+            body = MatchCondition(MatchMode.REGEX, "告警.*"))))
+        var parent = parent(original)
+        val request = editMatch(parent, 0)
+        var config = launch(MatchRuleActivity::class.java, request.intent).get()
+        assertTrue(tagged<View>(config, "unrestricted_sms").performClick())
+        MatchFieldTags.forEach { assertEquals("", tagged<EditText>(config, it).text.toString()) }
+        parent = rebuild(parent)
+        config = rebuild(config)
+        MatchFieldTags.forEach { assertEquals("", tagged<EditText>(config, it).text.toString()) }
+        assertEquals(original, store.rule(original.id))
+        click(config, "确定")
+        deliver(parent, request, config)
+        val expected = original.copy(matchRules = listOf(MatchRule(id = "sms-original")))
+        assertEquals(expected, draft(parent))
+        assertEquals(original, store.rule(original.id))
+        click(parent, "保存")
+        assertEquals(expected, AppStore(app).rule(original.id))
+        val reopened = parent(expected)
+        assertEquals(expected, draft(reopened))
+    }
+
+    @Test fun cancelingUnrestrictedShortcutKeepsSavedFilters() {
+        val original = fixture()
+        val parent = parent(original)
+        val request = editMatch(parent, 0)
+        val config = launch(MatchRuleActivity::class.java, request.intent).get()
+        assertTrue(tagged<View>(config, "unrestricted_sms").performClick())
+        click(config, "返回")
+        deliver(parent, request, config)
+        assertEquals(original, draft(parent))
+        assertEquals(original, store.rule(original.id))
+    }
+
     @Test fun invalidSmsStaysInConfigAndBackNeverAddsATrigger() {
         val parent = parent()
         val request = beginMatch(parent)

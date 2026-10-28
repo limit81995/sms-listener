@@ -80,7 +80,10 @@ class MonitorService : Service() {
             val candidate = WakeReceiver { action ->
                 submit("屏幕事件处理失败") {
                     guarded("屏幕触发调度失败") {
-                        WakeReceiver.sourceFor(action)?.let { triggers.onEvent(it) }
+                        WakeReceiver.sourceFor(action)?.let { source ->
+                            store.log("收到${source.label}事件，检查对应触发规则")
+                            triggers.onEvent(source)
+                        }
                     }
                     // Exactly one catch-up query per screen-on/unlock event; never a timer loop.
                     if (WakeReceiver.shouldCheckSms(action)) {

@@ -11,6 +11,7 @@ import android.os.Looper
 import android.os.PowerManager
 import android.os.SystemClock
 import io.github.smslistener.action.AlarmFlash
+import io.github.smslistener.core.ActionOperation
 import io.github.smslistener.core.ActionType
 import io.github.smslistener.data.AppStore
 
@@ -69,9 +70,16 @@ class AlarmService : Service() {
             val allowed = commands.filter { (monitoring || !it.fromSms) && ActionCancellationTracker.accepts(it) }
             if (allowed.size != commands.size) log("已取消暂停监听或停止指令之前排队的本机动作")
             if (allowed.isNotEmpty()) {
+                val idleStop = !engine.hasWork() && allowed.all {
+                    it.operation == ActionOperation.STOP && it.delayMs == 0L
+                }
                 engine.submit(allowed, receivedAt)
                 notifications.clearFailure()
-                log("已接收 " + allowed.size + " 个本机动作，按规则和通道独立处理")
+                val starts = allowed.count { it.operation == ActionOperation.START }
+                log("已接收本机动作：启动 $starts 个，停止 ${allowed.size - starts} 个")
+                // STOP must still publish cancellation epochs for in-flight/delayed starts.
+                // An idle stop is not evidence that an SMS alarm ran and then ended.
+                if (idleStop) log("停止指令已处理：当前服务没有运行或等待中的报警")
             }
             renderAndSchedule()
         } catch (error: Exception) { runtimeFailure(error) }
@@ -260,7 +268,7 @@ class AlarmService : Service() {
         stopOutputs()
         releaseWakeLock()
         active = false
-        log("报警任务已结束，已释放对应资源")
+        log("本机动作服务已退出，资源已释放")
         stopForeground(STOP_FOREGROUND_REMOVE)
         super.onDestroy()
     }
